@@ -48,7 +48,6 @@ typedef NSUInteger BGOperationMode;
 - (BOOL) isLocationEnabled;
 - (void) showAppSettings;
 - (void) showLocationSettings;
-- (void) switchMode:(BGOperationMode)mode;
 - (NSMutableDictionary*)getStationaryLocation;
 - (NSArray<NSMutableDictionary*>*) getLocations;
 - (NSArray<NSMutableDictionary*>*) getValidLocations;

@@ -150,10 +150,8 @@ enum {
 
     DDLogDebug(@"%@", config);
 
-    locationManager.pausesLocationUpdatesAutomatically = YES;
-    locationManager.activityType = [_config decodeActivityType];
-    locationManager.distanceFilter = _config.distanceFilter; // meters
-    locationManager.desiredAccuracy = [_config decodeDesiredAccuracy];
+    locationManager.distanceFilter = kCLDistanceFilterNone;
+    locationManager.desiredAccuracy = kCLLocationAccuracyBest;
 
     // ios 8 requires permissions to send local-notifications
     if (_config.isDebugging) {
@@ -221,8 +219,9 @@ enum {
     }
 
     isStarted = YES;
-    [self switchMode:FOREGROUND];
-
+    aquireStartTime = [NSDate date];
+    [locationManager startUpdatingLocation];
+    
     return YES;
 }
 
@@ -238,8 +237,9 @@ enum {
     }
 
     isStarted = NO;
-
-    [self stopUpdatingLocation];
+    isUpdatingLocation = NO;
+    
+    [locationManager stopUpdatingLocation];
     [self stopMonitoringSignificantLocationChanges];
     [self stopMonitoringForRegion];
 
@@ -256,41 +256,6 @@ enum {
     DDLogInfo(@"LocationManager finish");
     [self stopBackgroundTask];
     return YES;
-}
-
-/**
- * toggle between foreground and background operation mode
- */
-- (void) switchMode:(BGOperationMode)mode
-{
-    DDLogInfo(@"LocationManager switchMode %lu", (unsigned long)mode);
-
-    operationMode = mode;
-
-    if (!isStarted) return;
-
-    if (_config.isDebugging) {
-        AudioServicesPlaySystemSound (operationMode  == FOREGROUND ? paceChangeYesSound : paceChangeNoSound);
-    }
-
-    if (operationMode == FOREGROUND || !_config.saveBatteryOnBackground) {
-        isAcquiringSpeed = YES;
-        isAcquiringStationaryLocation = NO;
-        [self stopMonitoringForRegion];
-        [self stopMonitoringSignificantLocationChanges];
-    } else if (operationMode == BACKGROUND) {
-        isAcquiringSpeed = NO;
-        isAcquiringStationaryLocation = YES;
-        [self startMonitoringSignificantLocationChanges];
-    }
-
-    aquireStartTime = [NSDate date];
-
-    // Crank up the GPS power temporarily to get a good fix on our current location
-    [self stopUpdatingLocation];
-    locationManager.distanceFilter = kCLDistanceFilterNone;
-    locationManager.desiredAccuracy = kCLLocationAccuracyBestForNavigation;
-    [self startUpdatingLocation];
 }
 
 - (BOOL) isLocationEnabled
@@ -496,24 +461,7 @@ enum {
     DDLogDebug(@"LocationManager didUpdateLocations (operationMode: %lu)", (unsigned long)operationMode);
 
     locationError = nil;
-    BGOperationMode actAsInMode = operationMode;
-
-    if (actAsInMode == BACKGROUND) {
-        if (_config.saveBatteryOnBackground == NO) actAsInMode = FOREGROUND;
-    }
-
-    if (actAsInMode == FOREGROUND) {
-        if (!isUpdatingLocation) [self startUpdatingLocation];
-    }
-
-    if (actAsInMode == BACKGROUND) {
-        if (!isAcquiringStationaryLocation && !stationaryRegion) {
-            // Perhaps our GPS signal was interupted, re-acquire a stationaryLocation now.
-            [self switchMode:operationMode];
-        }
-    }
-
-
+    
     for (CLLocation *location in locations) {
         Location *bgloc = [Location fromCLLocation:location];
         bgloc.type = @"current";
@@ -540,65 +488,6 @@ enum {
         return;
     }
 
-    // test the measurement to see if it is more accurate than the previous measurement
-    if (isAcquiringStationaryLocation) {
-        DDLogDebug(@"Acquiring stationary location, accuracy: %@", lastLocation.accuracy);
-        if (_config.isDebugging) {
-            AudioServicesPlaySystemSound (acquiringLocationSound);
-        }
-
-        if ([lastLocation.accuracy doubleValue] <= [[NSNumber numberWithInteger:_config.desiredAccuracy] doubleValue]) {
-            DDLogDebug(@"LocationManager found most accurate stationary before timeout");
-        } else if (-[aquireStartTime timeIntervalSinceNow] < maxLocationWaitTimeInSeconds) {
-            // we still have time to aquire better location
-            return;
-        }
-
-        isAcquiringStationaryLocation = NO;
-        [self stopUpdatingLocation]; //saving power while monitoring region
-
-        Location *stationaryLocation = [lastLocation copy];
-        stationaryLocation.type = @"stationary";
-        [self startMonitoringStationaryRegion:stationaryLocation];
-        // fire onStationary @event for Javascript.
-        [self queue:stationaryLocation];
-    } else if (isAcquiringSpeed) {
-        if (_config.isDebugging) {
-            AudioServicesPlaySystemSound (acquiringLocationSound);
-        }
-
-        if ([lastLocation.accuracy doubleValue] <= [[NSNumber numberWithInteger:_config.desiredAccuracy] doubleValue]) {
-            DDLogDebug(@"LocationManager found most accurate location before timeout");
-        } else if (-[aquireStartTime timeIntervalSinceNow] < maxLocationWaitTimeInSeconds) {
-            // we still have time to aquire better location
-            return;
-        }
-
-        if (_config.isDebugging) {
-            [self notify:@"Aggressive monitoring engaged"];
-        }
-
-        // We should have a good sample for speed now, power down our GPS as configured by user.
-        isAcquiringSpeed = NO;
-        locationManager.desiredAccuracy = _config.desiredAccuracy;
-        locationManager.distanceFilter = [self calculateDistanceFilter:[lastLocation.speed floatValue]];
-        [self startUpdatingLocation];
-
-    } else if (actAsInMode == FOREGROUND) {
-        // Adjust distanceFilter incrementally based upon current speed
-        float newDistanceFilter = [self calculateDistanceFilter:[lastLocation.speed floatValue]];
-        if (newDistanceFilter != locationManager.distanceFilter) {
-            DDLogInfo(@"LocationManager updated distanceFilter, new: %f, old: %f", newDistanceFilter, locationManager.distanceFilter);
-            locationManager.distanceFilter = newDistanceFilter;
-            [self startUpdatingLocation];
-        }
-    } else if ([self locationIsBeyondStationaryRegion:lastLocation]) {
-        if (_config.isDebugging) {
-            [self notify:@"Manual stationary exit-detection"];
-        }
-        [self switchMode:operationMode];
-    }
-
     [self queue:lastLocation];
 }
 
@@ -616,7 +505,6 @@ enum {
         AudioServicesPlaySystemSound (exitRegionSound);
         [self notify:@"Exit stationary region"];
     }
-    [self switchMode:operationMode];
 }
 
 - (void) locationManagerDidPauseLocationUpdates:(CLLocationManager *)manager
@@ -687,22 +575,6 @@ enum {
             break;
     }
 
-}
-
-- (void) stopUpdatingLocation
-{
-    if (isUpdatingLocation) {
-        [locationManager stopUpdatingLocation];
-        isUpdatingLocation = NO;
-    }
-}
-
-- (void) startUpdatingLocation
-{
-    if (!isUpdatingLocation) {
-        [locationManager startUpdatingLocation];
-        isUpdatingLocation = YES;
-    }
 }
 
 - (void) startMonitoringSignificantLocationChanges
@@ -789,9 +661,7 @@ enum {
     if (_config.stopOnTerminate) {
         DDLogInfo(@"LocationManager is stopping on app terminate.");
         [self stop:nil];
-    } else {
-        [self switchMode:BACKGROUND];
-    }
+    } 
 }
 
 - (void) dealloc
