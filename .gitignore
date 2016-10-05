@@ -6,6 +6,7 @@ npm-debug.log
 xcuserdata
 project.xcworkspace
 ios/react-native
+ios/DerivedData
 
 # Android/IJ
 .idea
