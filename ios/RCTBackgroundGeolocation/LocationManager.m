@@ -219,7 +219,6 @@ enum {
     }
 
     isStarted = YES;
-    aquireStartTime = [NSDate date];
     [locationManager startUpdatingLocation];
     
     return YES;
@@ -362,6 +361,7 @@ enum {
 
     // Create a background-task and delegate to Javascript for syncing location
     bgTask = [self createBackgroundTask];
+    
     // retrieve first queued location
     Location *location = [locationQueue firstObject];
     [locationQueue removeObject:location];
@@ -422,11 +422,11 @@ enum {
 {
     DDLogInfo(@"LocationManager#sync %@", location);
     if (_config.isDebugging) {
-        [self notify:[NSString stringWithFormat:@"Location update: %s\nSPD: %0.0f | DF: %ld | ACY: %0.0f",
-            ((operationMode == FOREGROUND) ? "FG" : "BG"),
-            [location.speed doubleValue],
-            (long) locationManager.distanceFilter,
-            [location.accuracy doubleValue]
+        [self notify:[NSString stringWithFormat:@"Location update\nACY: %0.0f\nLAT: %0.0f\nLNG: %0.0f\nDATE: %@",
+                      [location.accuracy doubleValue],
+                      [location.latitude doubleValue],
+                      [location.longitude doubleValue],
+                      [location.time description]
         ]];
 
         AudioServicesPlaySystemSound (locationSyncSound);
@@ -459,19 +459,24 @@ enum {
 - (void) locationManager:(CLLocationManager *)manager didUpdateLocations:(NSArray *)locations
 {
     DDLogDebug(@"LocationManager didUpdateLocations (operationMode: %lu)", (unsigned long)operationMode);
-
-    locationError = nil;
-    
     for (CLLocation *location in locations) {
-        Location *bgloc = [Location fromCLLocation:location];
-        bgloc.type = @"current";
-
-        // test the age of the location measurement to determine if the measurement is cached
-        // in most cases you will not want to rely on cached measurements
-        DDLogDebug(@"Location age %f", [bgloc locationAge]);
-        if ([bgloc locationAge] > maxLocationAgeInSeconds || ![bgloc hasAccuracy] || ![bgloc hasTime]) {
+        NSTimeInterval locationAge = -[location.timestamp timeIntervalSinceNow];
+        if (locationAge > 30.0) {
             continue;
         }
+        
+        // Select location with good accuracy
+        if (location &&
+            location.horizontalAccuracy > 0 &&
+            location.horizontalAccuracy < 2000 &&
+            location.coordinate.latitude != 0.0 &&
+            location.coordinate.longitude != 0.0) {
+        } else {
+            continue;
+        }
+        
+        Location *bgloc = [Location fromCLLocation:location];
+        bgloc.type = @"current";
 
         if (lastLocation == nil) {
             lastLocation = bgloc;
