@@ -78,6 +78,8 @@ enum {
 
     LocationUploader *uploader;
     Reachability *reach;
+    
+    NSTimer *restartLocationUpdateTimer;
 }
 
 
@@ -150,6 +152,7 @@ enum {
 
     DDLogDebug(@"%@", config);
 
+    locationManager.pausesLocationUpdatesAutomatically = NO;
     locationManager.distanceFilter = kCLDistanceFilterNone;
     locationManager.desiredAccuracy = kCLLocationAccuracyBest;
 
@@ -230,6 +233,11 @@ enum {
 - (BOOL) stop:(NSError * __autoreleasing *)outError
 {
     DDLogInfo(@"LocationManager stop");
+    
+    if (restartLocationUpdateTimer) {
+        [restartLocationUpdateTimer invalidate];
+        restartLocationUpdateTimer = nil;
+    }
 
     if (!isStarted) {
         return YES;
@@ -330,6 +338,53 @@ enum {
     return [locationDAO deleteAllLocations];
 }
 
+- (void)postLocation {
+    // Find the best location from the array based on accuracy
+    Location *bestLocation = locationQueue.firstObject;
+    for (NSInteger i = 1; i < locationQueue.count; i++){
+        Location *location = [locationQueue objectAtIndex:i];
+        if(location.accuracy <= bestLocation.accuracy){
+            bestLocation = location;
+        }
+    }
+    
+    if (locationQueue.count == 0) {
+        // Sometimes due to network issue or unknown reason, you could not get the location during that period
+        bestLocation = lastLocation;
+    }
+    
+    // Clear unused locations
+    [locationQueue removeAllObjects];
+    
+    [self sync:bestLocation];
+    
+    if (![bestLocation.type isEqual: @"current"]) {
+        return;
+    }
+    
+    if ([_config hasSyncUrl] || [_config hasUrl]) {
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_BACKGROUND, 0), ^{
+            if (hasConnectivity && [_config hasUrl]) {
+                NSError *error = nil;
+                if ([bestLocation postAsJSON:_config.url withHttpHeaders:_config.httpHeaders error:&error]) {
+                    SQLiteLocationDAO* locationDAO = [SQLiteLocationDAO sharedInstance];
+                    if (bestLocation.id != nil) {
+                        [locationDAO deleteLocation:bestLocation.id];
+                    }
+                } else {
+                    DDLogWarn(@"LocationManager postJSON failed: error: %@", error.userInfo[@"NSLocalizedDescription"]);
+                    hasConnectivity = [reach isReachable];
+                    [reach startNotifier];
+                }
+            }
+            
+            NSString *syncUrl = [_config hasSyncUrl] ? _config.syncUrl : _config.url;
+            [uploader sync:syncUrl onLocationThreshold:_config.syncThreshold];
+        });
+    }
+
+}
+
 - (void) queue:(Location*)location
 {
     DDLogDebug(@"LocationManager queue %@", location);
@@ -338,7 +393,6 @@ enum {
     location.id = [locationDAO persistLocation:location limitRows:_config.maxLocations];
 
     [locationQueue addObject:location];
-    [self flushQueue];
 }
 
 - (void) flushQueue
@@ -360,6 +414,7 @@ enum {
     }
 
     // Create a background-task and delegate to Javascript for syncing location
+    [locationManager startUpdatingLocation];
     bgTask = [self createBackgroundTask];
     
     // retrieve first queued location
@@ -470,30 +525,41 @@ enum {
             location.horizontalAccuracy > 0 &&
             location.horizontalAccuracy < 2000 &&
             location.coordinate.latitude != 0.0 &&
-            location.coordinate.longitude != 0.0) {
-        } else {
-            continue;
-        }
-        
-        Location *bgloc = [Location fromCLLocation:location];
-        bgloc.type = @"current";
-
-        if (lastLocation == nil) {
+            location.coordinate.longitude != 0.0){
+            
+            Location *bgloc = [Location fromCLLocation:location];
+            bgloc.type = @"current";
             lastLocation = bgloc;
-            continue;
-        }
 
-        if ([bgloc isBetterLocation:lastLocation]) {
-            DDLogInfo(@"Better location found: %@", bgloc);
-            lastLocation = bgloc;
+            [self queue:lastLocation];
         }
     }
 
     if (lastLocation == nil) {
         return;
     }
+    
+    if (restartLocationUpdateTimer) {
+        return;
+    }
+    
+    // Restart the location manager
+    restartLocationUpdateTimer = [NSTimer scheduledTimerWithTimeInterval:500
+                                                                  target:self
+                                                                selector:@selector(restartLocationUpdates)
+                                                                userInfo:nil
+                                                                 repeats:NO];
+}
 
-    [self queue:lastLocation];
+- (void)restartLocationUpdates {
+    if (restartLocationUpdateTimer) {
+        [restartLocationUpdateTimer invalidate];
+        restartLocationUpdateTimer = nil;
+    }
+    
+    [locationManager startUpdatingLocation];
+    
+    [self postLocation];
 }
 
 /**
