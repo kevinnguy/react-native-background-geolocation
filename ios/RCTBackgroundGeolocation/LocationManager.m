@@ -152,9 +152,10 @@ enum {
 
     DDLogDebug(@"%@", config);
 
+    locationManager.activityType = [_config decodeActivityType];
     locationManager.pausesLocationUpdatesAutomatically = NO;
-    locationManager.distanceFilter = kCLDistanceFilterNone;
-    locationManager.desiredAccuracy = kCLLocationAccuracyBest;
+    locationManager.distanceFilter = _config.distanceFilter;
+    locationManager.desiredAccuracy = [_config decodeDesiredAccuracy];
 
     // ios 8 requires permissions to send local-notifications
     if (_config.isDebugging) {
