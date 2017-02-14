@@ -545,7 +545,7 @@ enum {
     }
     
     // Restart the location manager
-    restartLocationUpdateTimer = [NSTimer scheduledTimerWithTimeInterval:10
+    restartLocationUpdateTimer = [NSTimer scheduledTimerWithTimeInterval:_config.interval / 1000
                                                                   target:self
                                                                 selector:@selector(restartLocationUpdates)
                                                                 userInfo:nil

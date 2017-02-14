@@ -12,6 +12,7 @@
 
 @interface Config : NSObject
 
+@property NSInteger interval;
 @property NSInteger stationaryRadius;
 @property NSInteger distanceFilter;
 @property NSInteger desiredAccuracy;
